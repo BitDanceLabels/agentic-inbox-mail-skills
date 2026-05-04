@@ -55,6 +55,15 @@ Then open:
 https://mailcenter.bumbee.asia/?token=change-me
 ```
 
+Or require email-code login:
+
+```bash
+MAIL_WORKER_REQUIRE_AUTH=true \
+MAIL_WORKER_ADMIN_EMAILS=nhutpham@bitdancegroup.com \
+MAIL_WORKER_AUTH_FROM=nhutpham@bitdancegroup.com \
+npm run mail:admin
+```
+
 ## Production run
 
 ```bash
@@ -69,6 +78,10 @@ Useful environment variables:
 - `MAIL_WORKER_ADMIN_PORT`: admin UI port. Default: `18920`.
 - `MAIL_WORKER_ADMIN_HOST`: admin UI host. Default: `127.0.0.1`.
 - `MAIL_WORKER_ADMIN_TOKEN`: optional admin token required by API calls.
+- `MAIL_WORKER_REQUIRE_AUTH`: `true` to require login even without a static token.
+- `MAIL_WORKER_ADMIN_EMAILS`: comma-separated emails allowed to request login codes.
+- `MAIL_WORKER_AUTH_FROM`: from address for login-code email. Default: `nhutpham@bitdancegroup.com`.
+- `MAIL_WORKER_AUTH_DELIVERY`: set to `console` for local testing instead of sendmail.
 - `MAIL_WORKER_AUTO_SEND`: `true` to send replies. Default: `false`.
 - `MAIL_WORKER_POLL_MS`: polling interval. Default: `120000`.
 - `BUMBBEE_MAIL_AI_ENDPOINT` or `BUMBEE_MAIL_AI_ENDPOINT`: optional AI endpoint.

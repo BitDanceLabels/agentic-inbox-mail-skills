@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 import http from "node:http";
 import { once } from "node:events";
+import { spawn } from "node:child_process";
+import { randomBytes, randomInt } from "node:crypto";
 import {
 	getConfigFile,
 	getMockConfig,
@@ -10,6 +12,11 @@ import {
 } from "./config.js";
 import { MailWorkerStore, getDataDir } from "./store.js";
 import { runOnce } from "./worker.js";
+
+const otpCodes = new Map();
+const sessions = new Map();
+const OTP_TTL_MS = 10 * 60 * 1000;
+const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
 function sendJson(res, status, body) {
 	res.writeHead(status, {
@@ -24,6 +31,95 @@ async function readBody(req) {
 	for await (const chunk of req) chunks.push(chunk);
 	if (chunks.length === 0) return {};
 	return JSON.parse(Buffer.concat(chunks).toString("utf8"));
+}
+
+function parseCookies(req) {
+	const header = req.headers.cookie || "";
+	return Object.fromEntries(
+		header.split(";").map((part) => {
+			const [key, ...rest] = part.trim().split("=");
+			return [key, decodeURIComponent(rest.join("=") || "")];
+		}).filter(([key]) => key),
+	);
+}
+
+function setSessionCookie(res, token) {
+	res.setHeader(
+		"Set-Cookie",
+		`bumbee_mail_admin_session=${encodeURIComponent(token)}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=${Math.floor(SESSION_TTL_MS / 1000)}`,
+	);
+}
+
+function clearSessionCookie(res) {
+	res.setHeader(
+		"Set-Cookie",
+		"bumbee_mail_admin_session=; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=0",
+	);
+}
+
+function getAllowedEmails() {
+	return (process.env.MAIL_WORKER_ADMIN_EMAILS || "nhutpham@bitdancegroup.com")
+		.split(",")
+		.map((email) => email.trim().toLowerCase())
+		.filter(Boolean);
+}
+
+function isAllowedEmail(email) {
+	return getAllowedEmails().includes(String(email || "").trim().toLowerCase());
+}
+
+function createOtpCode() {
+	return process.env.MAIL_WORKER_AUTH_TEST_CODE || String(randomInt(100000, 999999));
+}
+
+async function sendCodeEmail(email, code) {
+	const from = process.env.MAIL_WORKER_AUTH_FROM || "nhutpham@bitdancegroup.com";
+	const subject = "Bumbee Mail Center login code";
+	const body = [
+		"Your Bumbee Mail Center login code:",
+		"",
+		code,
+		"",
+		"This code expires in 10 minutes.",
+	].join("\n");
+	if ((process.env.MAIL_WORKER_AUTH_DELIVERY || "").toLowerCase() === "console") {
+		console.log(`Bumbee Mail Center code for ${email}: ${code}`);
+		return { delivery: "console" };
+	}
+	const message = [
+		`From: Bumbee Mail Center <${from}>`,
+		`To: ${email}`,
+		`Subject: ${subject}`,
+		"MIME-Version: 1.0",
+		"Content-Type: text/plain; charset=utf-8",
+		"",
+		body,
+	].join("\n");
+	await new Promise((resolve, reject) => {
+		const child = spawn("/usr/sbin/sendmail", ["-t"], { stdio: ["pipe", "ignore", "pipe"] });
+		let stderr = "";
+		child.stderr.on("data", (chunk) => {
+			stderr += chunk.toString();
+		});
+		child.on("error", reject);
+		child.on("close", (code) => {
+			if (code === 0) resolve();
+			else reject(new Error(stderr || `sendmail exited with ${code}`));
+		});
+		child.stdin.end(message);
+	});
+	return { delivery: "sendmail" };
+}
+
+function getSession(req) {
+	const token = parseCookies(req).bumbee_mail_admin_session;
+	if (!token) return null;
+	const session = sessions.get(token);
+	if (!session || session.expiresAt < Date.now()) {
+		sessions.delete(token);
+		return null;
+	}
+	return session;
 }
 
 async function getState() {
@@ -56,12 +152,15 @@ function getAdminToken() {
 }
 
 function isAuthorized(req, url) {
+	const requireAuth = String(process.env.MAIL_WORKER_REQUIRE_AUTH || "").toLowerCase() === "true" || Boolean(getAdminToken());
+	if (!requireAuth) return true;
+	if (getSession(req)) return true;
 	const token = getAdminToken();
-	if (!token) return true;
 	const auth = req.headers.authorization || "";
 	const bearer = auth.toLowerCase().startsWith("bearer ") ? auth.slice(7) : "";
 	const headerToken = req.headers["x-admin-token"] || "";
 	const queryToken = url.searchParams.get("token") || "";
+	if (!token) return false;
 	return [bearer, headerToken, queryToken].some((candidate) => candidate === token);
 }
 
@@ -116,11 +215,13 @@ function html() {
 	<main class="wrap grid">
 		<section class="panel" id="login-panel" hidden>
 			<div class="kicker">Admin access</div>
-			<h2>Enter admin token</h2>
-			<p>Token nay duoc luu local trong browser de goi API quan tri.</p>
-			<textarea id="token-input" style="min-height:90px" placeholder="Paste admin token"></textarea>
+			<h2>Login by email code</h2>
+			<p>Nhap email duoc cap quyen, nhan code 6 so qua mail, roi verify de vao trang quan tri.</p>
+			<input id="email-input" style="width:100%;padding:12px;border:1px solid var(--line);border-radius:8px" value="nhutpham@bitdancegroup.com" />
+			<input id="code-input" style="width:100%;padding:12px;border:1px solid var(--line);border-radius:8px;margin-top:10px" placeholder="6-digit code" />
 			<div class="actions">
-				<button onclick="saveToken()">Unlock</button>
+				<button onclick="requestCode()">Get code</button>
+				<button class="warn" onclick="verifyCode()">Verify</button>
 			</div>
 			<div id="login-status" class="status"></div>
 		</section>
@@ -156,7 +257,8 @@ function html() {
 		const configEl = document.getElementById("config");
 		const loginPanel = document.getElementById("login-panel");
 		const configPanel = document.getElementById("config-panel");
-		const tokenInput = document.getElementById("token-input");
+		const emailInput = document.getElementById("email-input");
+		const codeInput = document.getElementById("code-input");
 		const loginStatus = document.getElementById("login-status");
 		let adminToken = localStorage.getItem("bumbeeMailAdminToken") || new URLSearchParams(location.search).get("token") || "";
 		if (adminToken) localStorage.setItem("bumbeeMailAdminToken", adminToken);
@@ -170,10 +272,24 @@ function html() {
 			loginStatus.textContent = message || "Admin token required.";
 			loginStatus.className = "status bad";
 		}
-		function saveToken() {
-			adminToken = tokenInput.value.trim();
-			localStorage.setItem("bumbeeMailAdminToken", adminToken);
-			loadState().catch((error) => showLogin(error.message));
+		async function requestCode() {
+			try {
+				const result = await api("/api/auth/request-code", { method: "POST", body: JSON.stringify({ email: emailInput.value.trim() }) });
+				loginStatus.textContent = "Code sent to " + result.email + ".";
+				loginStatus.className = "status good";
+			} catch (error) {
+				showLogin(error.message);
+			}
+		}
+		async function verifyCode() {
+			try {
+				await api("/api/auth/verify", { method: "POST", body: JSON.stringify({ email: emailInput.value.trim(), code: codeInput.value.trim() }) });
+				loginStatus.textContent = "Login successful.";
+				loginStatus.className = "status good";
+				await loadState();
+			} catch (error) {
+				showLogin(error.message);
+			}
 		}
 		async function api(path, options) {
 			const res = await fetch(path, {
@@ -250,8 +366,44 @@ async function handle(req, res) {
 			sendJson(res, 200, { ok: true, service: "bumbee-mail-worker-admin" });
 			return;
 		}
+		if (req.method === "POST" && url.pathname === "/api/auth/request-code") {
+			const body = await readBody(req);
+			const email = String(body.email || "").trim().toLowerCase();
+			if (!isAllowedEmail(email)) {
+				sendJson(res, 403, { error: "Email is not allowed" });
+				return;
+			}
+			const code = createOtpCode();
+			otpCodes.set(email, { code, expiresAt: Date.now() + OTP_TTL_MS });
+			const delivery = await sendCodeEmail(email, code);
+			sendJson(res, 200, { ok: true, email, ...delivery });
+			return;
+		}
+		if (req.method === "POST" && url.pathname === "/api/auth/verify") {
+			const body = await readBody(req);
+			const email = String(body.email || "").trim().toLowerCase();
+			const code = String(body.code || "").trim();
+			const record = otpCodes.get(email);
+			if (!isAllowedEmail(email) || !record || record.expiresAt < Date.now() || record.code !== code) {
+				sendJson(res, 401, { error: "Invalid or expired code" });
+				return;
+			}
+			otpCodes.delete(email);
+			const sessionToken = randomBytes(32).toString("hex");
+			sessions.set(sessionToken, { email, expiresAt: Date.now() + SESSION_TTL_MS });
+			setSessionCookie(res, sessionToken);
+			sendJson(res, 200, { ok: true, email });
+			return;
+		}
+		if (req.method === "POST" && url.pathname === "/api/auth/logout") {
+			const token = parseCookies(req).bumbee_mail_admin_session;
+			if (token) sessions.delete(token);
+			clearSessionCookie(res);
+			sendJson(res, 200, { ok: true });
+			return;
+		}
 		if (url.pathname.startsWith("/api/") && !isAuthorized(req, url)) {
-			sendJson(res, 401, { error: "Admin token required" });
+			sendJson(res, 401, { error: "Login required" });
 			return;
 		}
 		if (req.method === "GET" && url.pathname === "/api/state") {

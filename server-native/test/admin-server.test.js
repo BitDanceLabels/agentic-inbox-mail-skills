@@ -8,6 +8,13 @@ import { createAdminServer } from "../src/admin-server.js";
 
 async function withServer(fn) {
 	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "bumbee-mail-admin-"));
+	const oldEnv = {
+		MAIL_WORKER_DATA_DIR: process.env.MAIL_WORKER_DATA_DIR,
+		MAIL_WORKER_REQUIRE_AUTH: process.env.MAIL_WORKER_REQUIRE_AUTH,
+		MAIL_WORKER_ADMIN_EMAILS: process.env.MAIL_WORKER_ADMIN_EMAILS,
+		MAIL_WORKER_AUTH_DELIVERY: process.env.MAIL_WORKER_AUTH_DELIVERY,
+		MAIL_WORKER_AUTH_TEST_CODE: process.env.MAIL_WORKER_AUTH_TEST_CODE,
+	};
 	process.env.MAIL_WORKER_DATA_DIR = dir;
 	const server = createAdminServer();
 	server.listen(0, "127.0.0.1");
@@ -17,7 +24,10 @@ async function withServer(fn) {
 		await fn(`http://${address.address}:${address.port}`, dir);
 	} finally {
 		await new Promise((resolve) => server.close(resolve));
-		delete process.env.MAIL_WORKER_DATA_DIR;
+		for (const [key, value] of Object.entries(oldEnv)) {
+			if (value == null) delete process.env[key];
+			else process.env[key] = value;
+		}
 	}
 }
 
@@ -48,5 +58,41 @@ test("admin server saves config and runs mock demo", async () => {
 		assert.equal(state.workItems.length, 2);
 		assert.equal(state.outbox.length, 2);
 		assert.equal(state.configFile, path.join(dir, "config.json"));
+	});
+});
+
+test("admin server supports email code login", async () => {
+	await withServer(async (baseUrl) => {
+		process.env.MAIL_WORKER_REQUIRE_AUTH = "true";
+		process.env.MAIL_WORKER_ADMIN_EMAILS = "nhutpham@bitdancegroup.com";
+		process.env.MAIL_WORKER_AUTH_DELIVERY = "console";
+		process.env.MAIL_WORKER_AUTH_TEST_CODE = "123456";
+
+		const blocked = await fetch(`${baseUrl}/api/state`);
+		assert.equal(blocked.status, 401);
+
+		const request = await fetch(`${baseUrl}/api/auth/request-code`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ email: "nhutpham@bitdancegroup.com" }),
+		}).then((res) => res.json());
+		assert.equal(request.ok, true);
+
+		const verify = await fetch(`${baseUrl}/api/auth/verify`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({
+				email: "nhutpham@bitdancegroup.com",
+				code: "123456",
+			}),
+		});
+		assert.equal(verify.status, 200);
+		const cookie = verify.headers.get("set-cookie");
+		assert.match(cookie, /bumbee_mail_admin_session=/);
+
+		const state = await fetch(`${baseUrl}/api/state`, {
+			headers: { Cookie: cookie },
+		});
+		assert.equal(state.status, 200);
 	});
 });
