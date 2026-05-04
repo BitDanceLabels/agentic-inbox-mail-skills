@@ -28,9 +28,11 @@ import {
 	toolMarkEmailRead,
 	toolMoveEmail,
 	toolDiscardDraft,
+	toolSendReply,
 } from "../lib/tools";
 import { Folders, FOLDER_TOOL_DESCRIPTION, MOVE_FOLDER_TOOL_DESCRIPTION } from "../../shared/folders";
 import type { Env } from "../types";
+import { getWorkItemSystemInstruction, type WorkItemClassification } from "../lib/work-items";
 
 // AI SDK v6 changed tool() overloads significantly. We define tools as plain
 // objects matching the Tool type to avoid overload resolution issues.
@@ -86,6 +88,31 @@ You can ONLY draft emails. You do NOT have the ability to send emails directly.
 
 ## Draft Management
 Use discard_draft to delete drafts that the operator rejects or that are no longer needed.`;
+
+function shouldAutoSendWorkItems(env: Env) {
+	return String((env as any).AUTO_SEND_WORK_ITEM_REPLIES || "").toLowerCase() === "true";
+}
+
+function buildReplySubject(subject: string) {
+	return subject.trim().toLowerCase().startsWith("re:") ? subject : `Re: ${subject}`;
+}
+
+async function generateWorkItemReply(env: Env, systemPrompt: string, prompt: string) {
+	const workersai = createWorkersAI({ binding: env.AI });
+	const result = await generateText({
+		model: workersai("@cf/moonshotai/kimi-k2.5"),
+		system: `${systemPrompt}\n\nReturn ONLY the final email reply text. Do not include markdown, tool notes, or explanations.`,
+		messages: await convertToModelMessages([
+			{
+				role: "user" as const,
+				content: prompt,
+				parts: [{ type: "text" as const, text: prompt }],
+				createdAt: new Date(),
+			},
+		]),
+	});
+	return result.text.trim();
+}
 
 /**
  * Fetch the custom system prompt for a mailbox from its R2 settings.
@@ -306,6 +333,7 @@ export class EmailAgent extends AIChatAgent<any> {
 					sender: string;
 					subject: string;
 					threadId: string;
+					workItem?: WorkItemClassification | null;
 				};
 				const result = await this.handleNewEmail(emailData);
 				return new Response(JSON.stringify(result), {
@@ -332,11 +360,13 @@ export class EmailAgent extends AIChatAgent<any> {
 		sender: string;
 		subject: string;
 		threadId: string;
+		workItem?: WorkItemClassification | null;
 	}) {
 		const env = this.env as Env;
 		const workersai = createWorkersAI({ binding: env.AI });
 		const tools = createEmailTools(env, emailData.mailboxId);
-		const systemPrompt = await getSystemPrompt(env, emailData.mailboxId);
+		const workItemInstruction = getWorkItemSystemInstruction(emailData.workItem || null);
+		const systemPrompt = `${await getSystemPrompt(env, emailData.mailboxId)}${workItemInstruction}`;
 
 		// Pre-read the email and thread so the agent has full context
 		// without needing to waste tool calls discovering it
@@ -423,6 +453,10 @@ export class EmailAgent extends AIChatAgent<any> {
 			console.warn("Pre-read failed, agent will use tools:", (e as Error).message);
 		}
 
+		const workItemLabel = emailData.workItem
+			? `\nDetected work item type: ${emailData.workItem.type.toUpperCase()}\nRoute/folder: ${emailData.workItem.folderId}\n`
+			: "";
+
 		let autoPrompt = `A new email just arrived. Draft an appropriate response using draft_reply.
 
 Email details:
@@ -431,6 +465,7 @@ Email details:
 - From: ${emailData.sender}
 - Subject: ${emailData.subject}
 - Thread ID: ${emailData.threadId}
+${workItemLabel}
 
 Email body:
 ${emailBody || "(could not pre-read — use get_email to read it)"}`;
@@ -449,6 +484,42 @@ This is the first message in the thread (no prior conversation).`;
 		autoPrompt += `
 
 Based on the email content and thread context above, draft a reply using draft_reply. If you need more context, use get_thread with thread ID "${emailData.threadId}".`;
+
+		if (emailData.workItem && shouldAutoSendWorkItems(env)) {
+			try {
+				const replyText = await generateWorkItemReply(env, systemPrompt, autoPrompt);
+				const sent = await toolSendReply(env, emailData.mailboxId, {
+					originalEmailId: emailData.emailId,
+					to: emailData.sender,
+					subject: buildReplySubject(emailData.subject || "Ticket update"),
+					bodyHtml: textToHtml(replyText),
+				});
+				const assistantText = "error" in sent
+					? `Auto-send failed for ${emailData.workItem.type}: ${sent.error}`
+					: `Auto-sent ${emailData.workItem.type} reply to ${emailData.sender}.`;
+				const newMessages = [
+					{
+						id: crypto.randomUUID(),
+						role: "user" as const,
+						content: `[Auto-triggered] New ${emailData.workItem.type} from ${emailData.sender}: "${emailData.subject}"`,
+						createdAt: new Date(),
+						parts: [{ type: "text" as const, text: `[Auto-triggered] New ${emailData.workItem.type} from ${emailData.sender}: "${emailData.subject}"` }],
+					},
+					{
+						id: crypto.randomUUID(),
+						role: "assistant" as const,
+						content: assistantText,
+						createdAt: new Date(),
+						parts: [{ type: "text" as const, text: assistantText }],
+					},
+				];
+				await this.persistMessages([...this.messages, ...newMessages]);
+				return "error" in sent ? { status: "error", error: sent.error } : { status: "auto_sent", result: sent };
+			} catch (e) {
+				console.error("Work item auto-send failed:", (e as Error).message);
+				return { status: "error", error: (e as Error).message };
+			}
+		}
 
 		// Fresh context for auto-draft -- don't include prior chat history
 		// to avoid confusing the model with old messages and tool calls

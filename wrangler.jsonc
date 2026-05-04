@@ -13,8 +13,15 @@
 		// Production deploys must also define POLICY_AUD and TEAM_DOMAIN.
 		// TEAM_DOMAIN may be the base Access URL or the full /cdn-cgi/access/certs URL.
 		// The worker now fails closed outside local development if Access is not configured.
-		"DOMAINS": "example.com",
-		"EMAIL_ADDRESSES": []
+		"DOMAINS": "bumbee.asia,bitdancegroup.com",
+		"EMAIL_ADDRESSES": [
+			"support@bumbee.asia",
+			"nhutpham@bitdancegroup.com",
+			"bitdance.work@gmail.com"
+		],
+		// Default safe mode: detected ticket/task emails create AI draft replies.
+		// Set to "true" only when you want automatic replies to be sent.
+		"AUTO_SEND_WORK_ITEM_REPLIES": "false"
 	},
 	"send_email": [
 		{

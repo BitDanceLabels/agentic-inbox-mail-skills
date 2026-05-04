@@ -168,4 +168,12 @@ export const mailboxMigrations: Migration[] = [
             CREATE INDEX IF NOT EXISTS idx_emails_folder_date ON emails(folder_id, date DESC);
         `,
 	},
+	{
+		name: "9_add_ticket_task_folders",
+		sql: `
+            INSERT OR IGNORE INTO folders (id, name, is_deletable) VALUES
+                ('ticket', 'Tickets', 0),
+                ('task', 'Tasks', 0);
+        `,
+	},
 ];

@@ -41,7 +41,33 @@ https://github.com/cloudflare/agentic-inbox/issues/4#issuecomment-4269118513
 - **Per-mailbox isolation** — Each mailbox runs in its own Durable Object with SQLite storage and R2 for attachments
 - **Built-in AI agent** — Side panel with 9 email tools for reading, searching, drafting, and sending
 - **Auto-draft on new email** — Agent automatically reads inbound emails and generates draft replies, always requiring explicit confirmation before sending
+- **Ticket/task detection** — Incoming subjects containing `ticket` or `task` case-insensitively are routed into Tickets/Tasks and handled with an operational AI reply flow
 - **Configurable and persistent** — Custom system prompts per mailbox, persistent chat history, streaming markdown responses, and tool call visibility
+
+## Bumbee ticket/task workflow
+
+This fork is configured for the Bumbee/BitDance operating workflow:
+
+- `support@bumbee.asia`
+- `nhutpham@bitdancegroup.com`
+- `bitdance.work@gmail.com`
+
+When a received email subject contains `ticket` or `task` in any casing, including forms such as `[ticket]`, `[TASK]`, `Ticket:`, or `new task`, the worker classifies it as a business work item.
+
+Detected work items are stored in dedicated folders:
+
+- `ticket` → Tickets
+- `task` → Tasks
+
+The AI agent receives the work-item metadata and drafts a reply on the same email thread that acknowledges the request, summarizes the task, and states the next action or completion status.
+
+By default, work-item replies are saved as drafts for review. To automatically send verified replies on the thread, set:
+
+```bash
+AUTO_SEND_WORK_ITEM_REPLIES=true
+```
+
+Keep the default `false` mode until the mailbox routing and AI behavior have been tested with real sample emails.
 
 ## Stack
 
