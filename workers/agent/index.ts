@@ -109,7 +109,7 @@ async function generateWorkItemReply(env: Env, systemPrompt: string, prompt: str
 				parts: [{ type: "text" as const, text: prompt }],
 				createdAt: new Date(),
 			},
-		]),
+		] as any),
 	});
 	return result.text.trim();
 }

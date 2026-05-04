@@ -5,5 +5,4 @@
 export interface Env extends Cloudflare.Env {
 	POLICY_AUD: string;
 	TEAM_DOMAIN: string;
-	AUTO_SEND_WORK_ITEM_REPLIES?: string;
 }
