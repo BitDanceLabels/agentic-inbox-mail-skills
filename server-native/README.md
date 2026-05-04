@@ -18,16 +18,38 @@ The demo uses a mock mailbox and writes local state under:
 server-native/data/
 ```
 
+## Web admin UI
+
+```bash
+npm run mail:admin
+```
+
+Default local URL:
+
+```text
+http://127.0.0.1:18920
+```
+
+The admin UI can:
+
+- save mailbox config to `server-native/data/config.json`;
+- run one scan immediately;
+- run the mock demo from the browser;
+- show latest work items and outbox replies.
+
 ## Production run
 
 ```bash
-MAIL_WORKER_CONFIG_JSON='{"mailboxes":[...]}' npm run mail:worker
+npm run mail:worker
 ```
 
 Useful environment variables:
 
 - `MAIL_WORKER_CONFIG_JSON`: JSON config for mailboxes.
+- `MAIL_WORKER_CONFIG_FILE`: config file path. Default: `server-native/data/config.json`.
 - `MAIL_WORKER_DATA_DIR`: state directory. Default: `server-native/data`.
+- `MAIL_WORKER_ADMIN_PORT`: admin UI port. Default: `18920`.
+- `MAIL_WORKER_ADMIN_HOST`: admin UI host. Default: `127.0.0.1`.
 - `MAIL_WORKER_AUTO_SEND`: `true` to send replies. Default: `false`.
 - `MAIL_WORKER_POLL_MS`: polling interval. Default: `120000`.
 - `BUMBBEE_MAIL_AI_ENDPOINT` or `BUMBEE_MAIL_AI_ENDPOINT`: optional AI endpoint.
@@ -90,4 +112,3 @@ Mock mailbox for tests:
   ]
 }
 ```
-

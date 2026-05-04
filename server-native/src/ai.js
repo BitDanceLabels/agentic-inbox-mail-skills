@@ -16,8 +16,11 @@ export function buildFallbackReply({ message, classification }) {
 	].join("\n");
 }
 
-export async function generateReply({ message, classification, mailboxId }) {
-	const endpoint = process.env.BUMBBEE_MAIL_AI_ENDPOINT || process.env.BUMBEE_MAIL_AI_ENDPOINT;
+export async function generateReply({ message, classification, mailboxId, config = {} }) {
+	const endpoint =
+		config.aiEndpoint ||
+		process.env.BUMBBEE_MAIL_AI_ENDPOINT ||
+		process.env.BUMBEE_MAIL_AI_ENDPOINT;
 	if (!endpoint) return buildFallbackReply({ message, classification });
 
 	const payload = {
@@ -29,8 +32,9 @@ export async function generateReply({ message, classification, mailboxId }) {
 		instructions: "Create a concise professional reply for the same email thread. Do not mention internal tooling.",
 	};
 	const headers = { "Content-Type": "application/json" };
-	if (process.env.BUMBEE_MAIL_AI_TOKEN) {
-		headers.Authorization = `Bearer ${process.env.BUMBEE_MAIL_AI_TOKEN}`;
+	const token = config.aiToken || process.env.BUMBEE_MAIL_AI_TOKEN;
+	if (token) {
+		headers.Authorization = `Bearer ${token}`;
 	}
 	const res = await fetch(endpoint, {
 		method: "POST",
@@ -41,4 +45,3 @@ export async function generateReply({ message, classification, mailboxId }) {
 	const data = await res.json();
 	return data.reply || data.answer || data.text || buildFallbackReply({ message, classification });
 }
-

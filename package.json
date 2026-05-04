@@ -17,6 +17,7 @@
 		"cf-typegen": "wrangler types",
 		"deploy": "npm run build && wrangler deploy",
 		"dev": "react-router dev",
+		"mail:admin": "node server-native/src/admin-server.js",
 		"mail:demo": "node server-native/src/worker.js --once --mock",
 		"mail:test": "node --test server-native/test/*.test.js",
 		"mail:worker": "node server-native/src/worker.js",

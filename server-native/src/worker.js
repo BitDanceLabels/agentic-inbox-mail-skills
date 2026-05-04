@@ -3,6 +3,7 @@ import { classifyWorkItemSubject, buildWorkItemId } from "./classify.js";
 import { generateReply } from "./ai.js";
 import { MailWorkerStore } from "./store.js";
 import { createProvider } from "./providers/index.js";
+import { getMockConfig, readSavedConfig, validateConfig } from "./config.js";
 
 function parseArgs() {
 	const args = new Set(process.argv.slice(2));
@@ -12,22 +13,21 @@ function parseArgs() {
 	};
 }
 
-function loadConfig({ mock = false } = {}) {
+export async function loadConfig({ mock = false } = {}) {
 	if (mock) {
-		return {
-			mailboxes: [
-				{ id: "support@bumbee.asia", provider: "mock" },
-			],
-		};
+		return getMockConfig();
 	}
-	if (!process.env.MAIL_WORKER_CONFIG_JSON) {
-		throw new Error("MAIL_WORKER_CONFIG_JSON is required unless --mock is used");
+	if (process.env.MAIL_WORKER_CONFIG_JSON) {
+		return validateConfig(JSON.parse(process.env.MAIL_WORKER_CONFIG_JSON));
 	}
-	const config = JSON.parse(process.env.MAIL_WORKER_CONFIG_JSON);
-	if (!Array.isArray(config.mailboxes) || config.mailboxes.length === 0) {
-		throw new Error("MAIL_WORKER_CONFIG_JSON.mailboxes must be a non-empty array");
+	try {
+		return await readSavedConfig();
+	} catch (error) {
+		if (error.code === "ENOENT") {
+			throw new Error("MAIL_WORKER_CONFIG_JSON or saved config file is required unless --mock is used");
+		}
+		throw error;
 	}
-	return config;
 }
 
 function shouldAutoSend(config) {
@@ -35,7 +35,7 @@ function shouldAutoSend(config) {
 	return String(value || "false").toLowerCase() === "true";
 }
 
-export async function processMailbox({ mailbox, store, autoSend }) {
+export async function processMailbox({ mailbox, store, autoSend, config = {} }) {
 	const provider = createProvider(mailbox, store);
 	const messages = await provider.listMessages();
 	const results = [];
@@ -59,7 +59,7 @@ export async function processMailbox({ mailbox, store, autoSend }) {
 			bodyPreview: (message.bodyText || message.bodyHtml || "").slice(0, 500),
 			createdAt: new Date().toISOString(),
 		};
-		const replyText = await generateReply({ message, classification, mailboxId: mailbox.id });
+		const replyText = await generateReply({ message, classification, mailboxId: mailbox.id, config });
 		workItem.replyText = replyText;
 		let replyResult = null;
 		if (autoSend) {
@@ -78,7 +78,7 @@ export async function runOnce(config, store = new MailWorkerStore()) {
 	const autoSend = shouldAutoSend(config);
 	const all = [];
 	for (const mailbox of config.mailboxes) {
-		const results = await processMailbox({ mailbox, store, autoSend });
+		const results = await processMailbox({ mailbox, store, autoSend, config });
 		all.push(...results);
 	}
 	return all;
@@ -86,7 +86,7 @@ export async function runOnce(config, store = new MailWorkerStore()) {
 
 async function main() {
 	const args = parseArgs();
-	const config = loadConfig(args);
+	const config = await loadConfig(args);
 	const pollMs = Number(process.env.MAIL_WORKER_POLL_MS || config.pollMs || 120000);
 	const store = new MailWorkerStore();
 	const tick = async () => {
@@ -110,4 +110,3 @@ if (import.meta.url === `file://${process.argv[1]}`) {
 		process.exit(1);
 	});
 }
-
