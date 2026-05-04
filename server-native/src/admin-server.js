@@ -12,6 +12,7 @@ import {
 } from "./config.js";
 import { MailWorkerStore, getDataDir } from "./store.js";
 import { runOnce } from "./worker.js";
+import { generateReply } from "./ai.js";
 
 const otpCodes = new Map();
 const sessions = new Map();
@@ -145,6 +146,95 @@ async function getState() {
 		workItems: workItems.slice(-50).reverse(),
 		outbox: outbox.slice(-50).reverse(),
 	};
+}
+
+function getDefaultMailboxes() {
+	return [
+		"support@bumbee.asia",
+		"nhutpham@bitdancegroup.com",
+		"bitdance.work@gmail.com",
+	];
+}
+
+async function getInboxMailboxes() {
+	try {
+		const config = await readSavedConfig();
+		const ids = config.mailboxes.map((mailbox) => mailbox.id).filter(Boolean);
+		return ids.length ? ids : getDefaultMailboxes();
+	} catch {
+		return getDefaultMailboxes();
+	}
+}
+
+function inboxFile(mailboxId) {
+	return `${getDataDir()}/inbox-${mailboxId.replace(/[^a-zA-Z0-9._-]/g, "_")}.json`;
+}
+
+async function readInbox(mailboxId) {
+	const fs = await import("node:fs/promises");
+	try {
+		return JSON.parse(await fs.readFile(inboxFile(mailboxId), "utf8"));
+	} catch (error) {
+		if (error.code !== "ENOENT") throw error;
+		const now = new Date().toISOString();
+		const seeded = [
+			{
+				id: "welcome-ticket",
+				folder: "inbox",
+				subject: "[ticket] Demo customer support request",
+				sender: "customer@example.com",
+				recipient: mailboxId,
+				date: now,
+				read: false,
+				starred: false,
+				body: "Customer reports that the contact form needs a follow-up. Use the AI Agent to summarize, classify, and draft the next reply.",
+				thread_id: "welcome-ticket",
+			},
+			{
+				id: "welcome-task",
+				folder: "inbox",
+				subject: "[task] Prepare operations checklist",
+				sender: "ops@example.com",
+				recipient: mailboxId,
+				date: now,
+				read: true,
+				starred: false,
+				body: "Prepare a short checklist for handling ticket and task emails from this mailbox.",
+				thread_id: "welcome-task",
+			},
+		];
+		await fs.mkdir(getDataDir(), { recursive: true });
+		await fs.writeFile(inboxFile(mailboxId), `${JSON.stringify(seeded, null, 2)}\n`, "utf8");
+		return seeded;
+	}
+}
+
+async function writeInbox(mailboxId, emails) {
+	const fs = await import("node:fs/promises");
+	await fs.mkdir(getDataDir(), { recursive: true });
+	await fs.writeFile(inboxFile(mailboxId), `${JSON.stringify(emails, null, 2)}\n`, "utf8");
+}
+
+async function agentReply({ mailboxId, message }) {
+	const emails = await readInbox(mailboxId);
+	const latest = emails.slice(0, 5).map((email) => `- ${email.subject} from ${email.sender}`).join("\n");
+	const lower = message.toLowerCase();
+	if (lower.includes("latest") || lower.includes("unread") || lower.includes("inbox")) {
+		return `Latest emails in ${mailboxId}:\n${latest || "No emails yet."}`;
+	}
+	if (lower.includes("draft") || lower.includes("reply")) {
+		const email = emails[0];
+		return generateReply({
+			message: {
+				subject: email?.subject || "Email reply",
+				from: email?.sender || "",
+				bodyText: email?.body || "",
+			},
+			classification: { type: email?.subject?.toLowerCase().includes("task") ? "task" : "ticket" },
+			mailboxId,
+		});
+	}
+	return `I am the server-native Bumbee Email Agent for ${mailboxId}.\n\nI can list latest emails, find unread messages, summarize a thread, and draft replies without Cloudflare Workers.\n\nCurrent mailbox snapshot:\n${latest || "No emails yet."}`;
 }
 
 function getAdminToken() {
@@ -354,12 +444,162 @@ function html() {
 </html>`;
 }
 
+function inboxHtml() {
+	return `<!doctype html>
+<html lang="en">
+<head>
+	<meta charset="utf-8" />
+	<meta name="viewport" content="width=device-width, initial-scale=1" />
+	<title>Bumbee Mail Center Inbox</title>
+	<style>
+		:root { --bg:#f5f6f8; --panel:#fff; --line:#dfe3ea; --text:#111827; --muted:#6b7280; --brand:#f4b000; --dark:#1f2937; }
+		* { box-sizing:border-box; }
+		body { margin:0; font-family:Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color:var(--text); background:var(--bg); }
+		.shell { display:grid; grid-template-columns:250px minmax(320px, 430px) minmax(420px, 1fr) 380px; height:100vh; overflow:hidden; }
+		aside, section { border-right:1px solid var(--line); background:var(--panel); min-width:0; }
+		.brand { padding:18px; border-bottom:1px solid var(--line); }
+		.brand h1 { margin:0; font-size:18px; }
+		.brand p { margin:6px 0 0; color:var(--muted); font-size:13px; line-height:1.45; }
+		.nav { padding:10px; }
+		button { border:1px solid var(--line); background:#fff; color:var(--text); border-radius:7px; padding:9px 11px; cursor:pointer; font-weight:650; }
+		button.primary { background:var(--dark); color:#fff; border-color:var(--dark); }
+		.mailbox, .email { width:100%; text-align:left; display:block; margin:4px 0; }
+		.mailbox.active, .email.active { background:#fff7db; border-color:#e0aa00; }
+		.toolbar { display:flex; align-items:center; justify-content:space-between; gap:10px; padding:12px; border-bottom:1px solid var(--line); }
+		.list { overflow:auto; height:calc(100vh - 57px); padding:8px; }
+		.email { padding:12px; }
+		.email strong { display:block; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+		.email span { display:block; color:var(--muted); font-size:12px; margin-top:3px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+		.reader { display:flex; flex-direction:column; height:100vh; background:#fff; }
+		.reader-head { padding:18px 22px; border-bottom:1px solid var(--line); }
+		.reader-head h2 { margin:0 0 8px; font-size:22px; }
+		.meta { color:var(--muted); font-size:13px; }
+		.body { padding:22px; line-height:1.65; white-space:pre-wrap; overflow:auto; }
+		.agent { display:flex; flex-direction:column; height:100vh; background:#fff; }
+		.agent-head { padding:13px; border-bottom:1px solid var(--line); display:flex; align-items:center; gap:8px; }
+		.badge { background:#fff1b8; color:#5b4200; padding:3px 7px; border-radius:999px; font-size:12px; font-weight:800; }
+		.chat { flex:1; overflow:auto; padding:14px; display:flex; flex-direction:column; gap:10px; }
+		.msg { border:1px solid var(--line); border-radius:8px; padding:10px; line-height:1.45; white-space:pre-wrap; font-size:14px; }
+		.msg.user { align-self:flex-end; background:#1f2937; color:#fff; max-width:88%; }
+		.msg.ai { align-self:flex-start; background:#fbfcfe; max-width:92%; }
+		.agent-input { display:flex; gap:8px; padding:12px; border-top:1px solid var(--line); }
+		textarea { flex:1; min-height:42px; max-height:110px; resize:vertical; border:1px solid var(--line); border-radius:8px; padding:10px; font:14px/1.4 inherit; }
+		.login { max-width:460px; margin:80px auto; background:#fff; border:1px solid var(--line); border-radius:8px; padding:22px; }
+		input { width:100%; padding:11px; border:1px solid var(--line); border-radius:8px; margin:8px 0; }
+		@media (max-width: 1180px) { .shell { grid-template-columns:220px 360px 1fr; } .agent { display:none; } }
+		@media (max-width: 780px) { .shell { grid-template-columns:1fr; } aside, .reader { display:none; } .agent { display:flex; } }
+	</style>
+</head>
+<body>
+	<div id="login" class="login" hidden>
+		<h1>Bumbee Mail Center</h1>
+		<p>Login bang email code de mo inbox va AI Agent.</p>
+		<input id="login-email" value="nhutpham@bitdancegroup.com" />
+		<input id="login-code" placeholder="6-digit code" />
+		<button class="primary" onclick="requestCode()">Get code</button>
+		<button onclick="verifyCode()">Verify</button>
+		<p id="login-msg"></p>
+	</div>
+	<div id="app" class="shell">
+		<aside>
+			<div class="brand">
+				<h1>Bumbee Inbox</h1>
+				<p>Server-native mail UI with AI Agent. No Cloudflare Worker runtime.</p>
+			</div>
+			<div class="nav" id="mailboxes"></div>
+			<div class="nav"><a href="/"><button>Worker Admin</button></a></div>
+		</aside>
+		<section>
+			<div class="toolbar"><strong>Inbox</strong><button onclick="loadEmails()">Refresh</button></div>
+			<div class="list" id="emails"></div>
+		</section>
+		<main class="reader">
+			<div class="reader-head">
+				<h2 id="subject">Select an email</h2>
+				<div class="meta" id="meta"></div>
+			</div>
+			<div class="body" id="body">Choose a message from the inbox list.</div>
+		</main>
+		<section class="agent">
+			<div class="agent-head"><span class="badge">AI</span><strong>Email Agent</strong></div>
+			<div id="chat" class="chat"></div>
+			<div class="agent-input">
+				<textarea id="agent-input" placeholder="Ask your email agent..."></textarea>
+				<button class="primary" onclick="sendAgent()">Send</button>
+			</div>
+		</section>
+	</div>
+	<script>
+		let mailboxId = "";
+		let selectedEmail = null;
+		function esc(value) { return String(value || "").replace(/[&<>"']/g, (c) => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#039;" }[c])); }
+		async function api(path, options) {
+			const res = await fetch(path, { headers:{ "Content-Type":"application/json" }, ...options });
+			const data = await res.json();
+			if (res.status === 401) { document.getElementById("login").hidden = false; document.getElementById("app").hidden = true; throw new Error(data.error || "Login required"); }
+			if (!res.ok) throw new Error(data.error || "Request failed");
+			return data;
+		}
+		async function requestCode() {
+			const email = document.getElementById("login-email").value.trim();
+			const result = await api("/api/auth/request-code", { method:"POST", body:JSON.stringify({ email }) }).catch((e) => ({ error:e.message }));
+			document.getElementById("login-msg").textContent = result.error || "Code sent to " + result.email;
+		}
+		async function verifyCode() {
+			const email = document.getElementById("login-email").value.trim();
+			const code = document.getElementById("login-code").value.trim();
+			await api("/api/auth/verify", { method:"POST", body:JSON.stringify({ email, code }) });
+			document.getElementById("login").hidden = true; document.getElementById("app").hidden = false; init();
+		}
+		async function init() {
+			const data = await api("/api/inbox/mailboxes");
+			mailboxId = data.mailboxes[0]?.id || "";
+			document.getElementById("mailboxes").innerHTML = data.mailboxes.map((m) => '<button class="mailbox ' + (m.id === mailboxId ? 'active' : '') + '" onclick="selectMailbox(\\'' + esc(m.id) + '\\')">' + esc(m.id) + '</button>').join("");
+			await loadEmails();
+			addAi("Ready. Try: Show me the latest inbox emails, Any unread emails, or Draft a response.");
+		}
+		async function selectMailbox(id) { mailboxId = id; selectedEmail = null; init(); }
+		async function loadEmails() {
+			const data = await api("/api/inbox/" + encodeURIComponent(mailboxId) + "/emails");
+			document.getElementById("emails").innerHTML = data.emails.map((e, i) => '<button class="email ' + (selectedEmail?.id === e.id || (!selectedEmail && i === 0) ? 'active' : '') + '" onclick="openEmail(\\'' + esc(e.id) + '\\')"><strong>' + esc(e.subject) + '</strong><span>' + esc(e.sender) + ' · ' + esc(e.date) + '</span><span>' + esc(e.body).slice(0, 120) + '</span></button>').join("");
+			if (!selectedEmail && data.emails[0]) openEmail(data.emails[0].id, data.emails);
+		}
+		async function openEmail(id, existing) {
+			const emails = existing || (await api("/api/inbox/" + encodeURIComponent(mailboxId) + "/emails")).emails;
+			selectedEmail = emails.find((e) => e.id === id);
+			if (!selectedEmail) return;
+			document.getElementById("subject").textContent = selectedEmail.subject;
+			document.getElementById("meta").textContent = selectedEmail.sender + " -> " + selectedEmail.recipient + " · " + selectedEmail.date;
+			document.getElementById("body").textContent = selectedEmail.body;
+		}
+		function addUser(text) { document.getElementById("chat").insertAdjacentHTML("beforeend", '<div class="msg user">' + esc(text) + '</div>'); }
+		function addAi(text) { document.getElementById("chat").insertAdjacentHTML("beforeend", '<div class="msg ai">' + esc(text) + '</div>'); document.getElementById("chat").scrollTop = document.getElementById("chat").scrollHeight; }
+		async function sendAgent() {
+			const input = document.getElementById("agent-input");
+			const text = input.value.trim();
+			if (!text) return;
+			input.value = "";
+			addUser(text);
+			const result = await api("/api/inbox/" + encodeURIComponent(mailboxId) + "/agent", { method:"POST", body:JSON.stringify({ message:text, emailId:selectedEmail?.id }) });
+			addAi(result.reply);
+		}
+		init().catch((error) => console.log(error.message));
+	</script>
+</body>
+</html>`;
+}
+
 async function handle(req, res) {
 	const url = new URL(req.url, "http://localhost");
 	try {
 		if (req.method === "GET" && url.pathname === "/") {
 			res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
 			res.end(html());
+			return;
+		}
+		if (req.method === "GET" && url.pathname === "/inbox") {
+			res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+			res.end(inboxHtml());
 			return;
 		}
 		if (req.method === "GET" && url.pathname === "/health") {
@@ -404,6 +644,26 @@ async function handle(req, res) {
 		}
 		if (url.pathname.startsWith("/api/") && !isAuthorized(req, url)) {
 			sendJson(res, 401, { error: "Login required" });
+			return;
+		}
+		if (req.method === "GET" && url.pathname === "/api/inbox/mailboxes") {
+			const mailboxes = await getInboxMailboxes();
+			sendJson(res, 200, { ok: true, mailboxes: mailboxes.map((id) => ({ id, email: id, name: id.split("@")[0] })) });
+			return;
+		}
+		const inboxEmailsMatch = url.pathname.match(/^\/api\/inbox\/([^/]+)\/emails$/);
+		if (req.method === "GET" && inboxEmailsMatch) {
+			const mailboxId = decodeURIComponent(inboxEmailsMatch[1]);
+			const emails = await readInbox(mailboxId);
+			sendJson(res, 200, { ok: true, emails: emails.sort((a, b) => String(b.date).localeCompare(String(a.date))) });
+			return;
+		}
+		const inboxAgentMatch = url.pathname.match(/^\/api\/inbox\/([^/]+)\/agent$/);
+		if (req.method === "POST" && inboxAgentMatch) {
+			const mailboxId = decodeURIComponent(inboxAgentMatch[1]);
+			const body = await readBody(req);
+			const reply = await agentReply({ mailboxId, message: String(body.message || "") });
+			sendJson(res, 200, { ok: true, reply });
 			return;
 		}
 		if (req.method === "GET" && url.pathname === "/api/state") {

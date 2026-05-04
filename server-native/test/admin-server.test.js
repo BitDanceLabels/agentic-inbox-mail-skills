@@ -96,3 +96,24 @@ test("admin server supports email code login", async () => {
 		assert.equal(state.status, 200);
 	});
 });
+
+test("admin server exposes server-native inbox and agent APIs", async () => {
+	await withServer(async (baseUrl) => {
+		const mailboxes = await fetch(`${baseUrl}/api/inbox/mailboxes`).then((res) => res.json());
+		assert.equal(mailboxes.ok, true);
+		assert.equal(mailboxes.mailboxes.length >= 1, true);
+
+		const mailboxId = mailboxes.mailboxes[0].id;
+		const emails = await fetch(`${baseUrl}/api/inbox/${encodeURIComponent(mailboxId)}/emails`).then((res) => res.json());
+		assert.equal(emails.ok, true);
+		assert.equal(emails.emails.length, 2);
+
+		const agent = await fetch(`${baseUrl}/api/inbox/${encodeURIComponent(mailboxId)}/agent`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ message: "Show me the latest inbox emails" }),
+		}).then((res) => res.json());
+		assert.equal(agent.ok, true);
+		assert.match(agent.reply, /Latest emails/);
+	});
+});
