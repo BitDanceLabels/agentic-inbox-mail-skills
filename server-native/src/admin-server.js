@@ -51,6 +51,20 @@ async function getState() {
 	};
 }
 
+function getAdminToken() {
+	return process.env.MAIL_WORKER_ADMIN_TOKEN || "";
+}
+
+function isAuthorized(req, url) {
+	const token = getAdminToken();
+	if (!token) return true;
+	const auth = req.headers.authorization || "";
+	const bearer = auth.toLowerCase().startsWith("bearer ") ? auth.slice(7) : "";
+	const headerToken = req.headers["x-admin-token"] || "";
+	const queryToken = url.searchParams.get("token") || "";
+	return [bearer, headerToken, queryToken].some((candidate) => candidate === token);
+}
+
 function html() {
 	return `<!doctype html>
 <html lang="en">
@@ -100,7 +114,17 @@ function html() {
 		</div>
 	</header>
 	<main class="wrap grid">
-		<section class="panel">
+		<section class="panel" id="login-panel" hidden>
+			<div class="kicker">Admin access</div>
+			<h2>Enter admin token</h2>
+			<p>Token nay duoc luu local trong browser de goi API quan tri.</p>
+			<textarea id="token-input" style="min-height:90px" placeholder="Paste admin token"></textarea>
+			<div class="actions">
+				<button onclick="saveToken()">Unlock</button>
+			</div>
+			<div id="login-status" class="status"></div>
+		</section>
+		<section class="panel" id="config-panel">
 			<div class="row">
 				<div>
 					<div class="kicker">Configuration</div>
@@ -130,13 +154,40 @@ function html() {
 	<script>
 		const statusEl = document.getElementById("status");
 		const configEl = document.getElementById("config");
+		const loginPanel = document.getElementById("login-panel");
+		const configPanel = document.getElementById("config-panel");
+		const tokenInput = document.getElementById("token-input");
+		const loginStatus = document.getElementById("login-status");
+		let adminToken = localStorage.getItem("bumbeeMailAdminToken") || new URLSearchParams(location.search).get("token") || "";
+		if (adminToken) localStorage.setItem("bumbeeMailAdminToken", adminToken);
 		function setStatus(text, kind = "") {
 			statusEl.textContent = text;
 			statusEl.className = "status " + kind;
 		}
+		function showLogin(message) {
+			loginPanel.hidden = false;
+			configPanel.hidden = true;
+			loginStatus.textContent = message || "Admin token required.";
+			loginStatus.className = "status bad";
+		}
+		function saveToken() {
+			adminToken = tokenInput.value.trim();
+			localStorage.setItem("bumbeeMailAdminToken", adminToken);
+			loadState().catch((error) => showLogin(error.message));
+		}
 		async function api(path, options) {
-			const res = await fetch(path, { headers: { "Content-Type": "application/json" }, ...options });
+			const res = await fetch(path, {
+				...options,
+				headers: {
+					"Content-Type": "application/json",
+					...(adminToken ? { Authorization: "Bearer " + adminToken } : {}),
+					...(options && options.headers ? options.headers : {}),
+				},
+			});
 			const data = await res.json();
+			if (res.status === 401) {
+				showLogin(data.error || "Admin token required.");
+			}
 			if (!res.ok) throw new Error(data.error || "Request failed");
 			return data;
 		}
@@ -152,6 +203,8 @@ function html() {
 		}
 		async function loadState() {
 			const state = await api("/api/state");
+			loginPanel.hidden = true;
+			configPanel.hidden = false;
 			document.getElementById("data-dir").textContent = state.dataDir;
 			document.getElementById("config-file").textContent = state.configFile;
 			document.getElementById("config-state").textContent = state.configError ? "Needs config" : "Configured";
@@ -195,6 +248,10 @@ async function handle(req, res) {
 		}
 		if (req.method === "GET" && url.pathname === "/health") {
 			sendJson(res, 200, { ok: true, service: "bumbee-mail-worker-admin" });
+			return;
+		}
+		if (url.pathname.startsWith("/api/") && !isAuthorized(req, url)) {
+			sendJson(res, 401, { error: "Admin token required" });
 			return;
 		}
 		if (req.method === "GET" && url.pathname === "/api/state") {

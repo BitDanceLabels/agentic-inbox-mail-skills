@@ -30,12 +30,30 @@ Default local URL:
 http://127.0.0.1:18920
 ```
 
+Current Bumbee public URL:
+
+```text
+https://mailcenter.bumbee.asia
+```
+
 The admin UI can:
 
 - save mailbox config to `server-native/data/config.json`;
 - run one scan immediately;
 - run the mock demo from the browser;
 - show latest work items and outbox replies.
+
+For public exposure, protect the admin API with a token:
+
+```bash
+MAIL_WORKER_ADMIN_TOKEN='change-me' npm run mail:admin
+```
+
+Then open:
+
+```text
+https://mailcenter.bumbee.asia/?token=change-me
+```
 
 ## Production run
 
@@ -50,6 +68,7 @@ Useful environment variables:
 - `MAIL_WORKER_DATA_DIR`: state directory. Default: `server-native/data`.
 - `MAIL_WORKER_ADMIN_PORT`: admin UI port. Default: `18920`.
 - `MAIL_WORKER_ADMIN_HOST`: admin UI host. Default: `127.0.0.1`.
+- `MAIL_WORKER_ADMIN_TOKEN`: optional admin token required by API calls.
 - `MAIL_WORKER_AUTO_SEND`: `true` to send replies. Default: `false`.
 - `MAIL_WORKER_POLL_MS`: polling interval. Default: `120000`.
 - `BUMBBEE_MAIL_AI_ENDPOINT` or `BUMBEE_MAIL_AI_ENDPOINT`: optional AI endpoint.
