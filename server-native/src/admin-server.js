@@ -233,15 +233,111 @@ async function writeInbox(mailboxId, emails) {
 	await fs.writeFile(inboxFile(mailboxId), `${JSON.stringify(emails, null, 2)}\n`, "utf8");
 }
 
-async function agentReply({ mailboxId, message }) {
+function extractTextFromAiResponse(data) {
+	return (
+		data?.reply ||
+		data?.answer ||
+		data?.text ||
+		data?.message ||
+		data?.choices?.[0]?.message?.content ||
+		data?.choices?.[0]?.text ||
+		null
+	);
+}
+
+async function callOpenAiCompatible({ mailboxId, message, emails, selectedEmail }) {
+	const baseUrl = process.env.MAIL_WORKER_AI_BASE_URL || process.env.BUMBEE_MAIL_AI_BASE_URL || "";
+	const apiKey = process.env.MAIL_WORKER_AI_API_KEY || process.env.BUMBEE_MAIL_AI_API_KEY || "";
+	const model = process.env.MAIL_WORKER_AI_MODEL || process.env.BUMBEE_MAIL_AI_MODEL || "gpt-4o-mini";
+	if (!baseUrl || !apiKey) return null;
+	const mailboxSnapshot = emails.slice(0, 8).map((email) => ({
+		subject: email.subject,
+		from: email.sender,
+		to: email.recipient,
+		date: email.date,
+		read: email.read,
+		preview: String(email.body || "").slice(0, 500),
+	}));
+	const res = await fetch(`${baseUrl.replace(/\/$/, "")}/chat/completions`, {
+		method: "POST",
+		headers: {
+			"Content-Type": "application/json",
+			Authorization: `Bearer ${apiKey}`,
+		},
+		body: JSON.stringify({
+			model,
+			temperature: 0.4,
+			messages: [
+				{
+					role: "system",
+					content: [
+						"You are Bumbee Email Agent, a practical Vietnamese/English email operations assistant.",
+						"Answer naturally and directly. Help read inboxes, classify ticket/task emails, summarize, and draft professional replies.",
+						"If the user asks what model you use, say the configured model id and that you are routed through the Bumbee server-native mail center.",
+					].join(" "),
+				},
+				{
+					role: "user",
+					content: JSON.stringify({
+						mailboxId,
+						selectedEmail,
+						inbox: mailboxSnapshot,
+						userMessage: message,
+					}),
+				},
+			],
+		}),
+	});
+	if (!res.ok) {
+		const detail = await res.text().catch(() => "");
+		throw new Error(`AI gateway HTTP ${res.status}: ${detail.slice(0, 300)}`);
+	}
+	const data = await res.json();
+	return extractTextFromAiResponse(data);
+}
+
+async function agentReply({ mailboxId, message, emailId }) {
 	const emails = await readInbox(mailboxId);
+	const selectedEmail = emails.find((email) => email.id === emailId) || emails[0] || null;
 	const latest = emails.slice(0, 5).map((email) => `- ${email.subject} from ${email.sender}`).join("\n");
 	const lower = message.toLowerCase();
+	try {
+		const aiText = await callOpenAiCompatible({ mailboxId, message, emails, selectedEmail });
+		if (aiText) return `${aiText}\n\nSource: ${process.env.MAIL_WORKER_AI_MODEL || process.env.BUMBEE_MAIL_AI_MODEL || "configured AI model"}`;
+	} catch (error) {
+		console.error("mail agent AI gateway failed", error.message);
+	}
+	if (lower.includes("model") || lower.includes("models") || lower.includes("mô hình") || lower.includes("mo hinh")) {
+		return [
+			"Hiện tại Mail Center đang chạy ở chế độ server-native fallback.",
+			"",
+			"Model thật sẽ được dùng khi cấu hình các biến:",
+			"- MAIL_WORKER_AI_BASE_URL",
+			"- MAIL_WORKER_AI_API_KEY",
+			"- MAIL_WORKER_AI_MODEL",
+			"",
+			"UI và agent API đã sẵn sàng để nối vào OpenAI-compatible gateway của Bumbee. Nếu gateway token/model đang sống, em sẽ trả lời bằng model thật thay vì fallback này.",
+		].join("\n");
+	}
+	if (lower.includes("xin chào") || lower.includes("chào") || lower.includes("hello") || lower.includes("hi ")) {
+		return `Chào anh. Em là Bumbee Email Agent của mailbox ${mailboxId}. Em có thể đọc email đang chọn, liệt kê mail mới, tìm mail chưa đọc, phân loại ticket/task và soạn nháp trả lời.`;
+	}
 	if (lower.includes("latest") || lower.includes("unread") || lower.includes("inbox")) {
 		return `Latest emails in ${mailboxId}:\n${latest || "No emails yet."}`;
 	}
+	if (lower.includes("summarize") || lower.includes("tóm tắt") || lower.includes("tom tat")) {
+		if (!selectedEmail) return "Chưa có email nào để tóm tắt.";
+		return [
+			`Tóm tắt email đang chọn: ${selectedEmail.subject}`,
+			`Người gửi: ${selectedEmail.sender}`,
+			"",
+			String(selectedEmail.body || "").slice(0, 800),
+			"",
+			selectedEmail.subject.toLowerCase().includes("ticket") ? "Phân loại: ticket cần xử lý/response." : "Phân loại: task hoặc email vận hành.",
+		].join("\n");
+	}
 	if (lower.includes("draft") || lower.includes("reply")) {
-		const email = emails[0];
+		const email = selectedEmail || emails[0];
 		return generateReply({
 			message: {
 				subject: email?.subject || "Email reply",
@@ -252,7 +348,18 @@ async function agentReply({ mailboxId, message }) {
 			mailboxId,
 		});
 	}
-	return `I am the server-native Bumbee Email Agent for ${mailboxId}.\n\nI can list latest emails, find unread messages, summarize a thread, and draft replies without Cloudflare Workers.\n\nCurrent mailbox snapshot:\n${latest || "No emails yet."}`;
+	return [
+		`Em đang xem mailbox ${mailboxId}.`,
+		"",
+		"Em có thể xử lý các lệnh:",
+		"- Show me the latest inbox emails",
+		"- Any unread emails?",
+		"- Tóm tắt email này",
+		"- Draft a response",
+		"- Bạn đang dùng model gì?",
+		"",
+		`Snapshot:\n${latest || "No emails yet."}`,
+	].join("\n");
 }
 
 function getAdminToken() {
@@ -550,6 +657,8 @@ function inboxHtml() {
 	<script>
 		let mailboxId = "";
 		let selectedEmail = null;
+		let mailboxesCache = [];
+		let readyShown = false;
 		function esc(value) { return String(value || "").replace(/[&<>"']/g, (c) => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#039;" }[c])); }
 		async function api(path, options) {
 			const res = await fetch(path, { headers:{ "Content-Type":"application/json" }, ...options });
@@ -569,14 +678,32 @@ function inboxHtml() {
 			await api("/api/auth/verify", { method:"POST", body:JSON.stringify({ email, code }) });
 			document.getElementById("login").hidden = true; document.getElementById("app").hidden = false; init();
 		}
-		async function init() {
-			const data = await api("/api/inbox/mailboxes");
-			mailboxId = data.mailboxes[0]?.id || "";
-			document.getElementById("mailboxes").innerHTML = data.mailboxes.map((m) => '<button class="mailbox ' + (m.id === mailboxId ? 'active' : '') + '" onclick="selectMailbox(\\'' + esc(m.id) + '\\')">' + esc(m.id) + '</button>').join("");
-			await loadEmails();
-			addAi("Ready. Try: Show me the latest inbox emails, Any unread emails, or Draft a response.");
+		function renderMailboxes() {
+			document.getElementById("mailboxes").innerHTML = mailboxesCache.map((m) => '<button class="mailbox ' + (m.id === mailboxId ? 'active' : '') + '" onclick="selectMailbox(\\'' + esc(m.id) + '\\')">' + esc(m.id) + '</button>').join("");
 		}
-		async function selectMailbox(id) { mailboxId = id; selectedEmail = null; init(); }
+		async function init(preferredMailbox) {
+			const data = await api("/api/inbox/mailboxes");
+			mailboxesCache = data.mailboxes || [];
+			mailboxId = preferredMailbox || mailboxId || mailboxesCache[0]?.id || "";
+			renderMailboxes();
+			await loadEmails();
+			if (!readyShown) {
+				readyShown = true;
+				addAi("Ready. Try: Show me the latest inbox emails, Any unread emails, Tóm tắt email này, or Draft a response.");
+			}
+		}
+		async function selectMailbox(id) {
+			if (mailboxId === id) return;
+			mailboxId = id;
+			selectedEmail = null;
+			renderMailboxes();
+			document.getElementById("subject").textContent = "Loading...";
+			document.getElementById("meta").textContent = mailboxId;
+			document.getElementById("body").textContent = "";
+			document.getElementById("chat").innerHTML = "";
+			addAi("Switched to " + mailboxId + ". Ask me to list latest emails, summarize the selected email, or draft a reply.");
+			await loadEmails();
+		}
 		async function loadEmails() {
 			const data = await api("/api/inbox/" + encodeURIComponent(mailboxId) + "/emails");
 			document.getElementById("emails").innerHTML = data.emails.map((e, i) => '<button class="email ' + (selectedEmail?.id === e.id || (!selectedEmail && i === 0) ? 'active' : '') + '" onclick="openEmail(\\'' + esc(e.id) + '\\')"><strong>' + esc(e.subject) + '</strong><span>' + esc(e.sender) + ' · ' + esc(e.date) + '</span><span>' + esc(e.body).slice(0, 120) + '</span></button>').join("");
@@ -598,8 +725,15 @@ function inboxHtml() {
 			if (!text) return;
 			input.value = "";
 			addUser(text);
-			const result = await api("/api/inbox/" + encodeURIComponent(mailboxId) + "/agent", { method:"POST", body:JSON.stringify({ message:text, emailId:selectedEmail?.id }) });
-			addAi(result.reply);
+			const pendingId = "pending-" + Date.now();
+			document.getElementById("chat").insertAdjacentHTML("beforeend", '<div id="' + pendingId + '" class="msg ai">Thinking...</div>');
+			try {
+				const result = await api("/api/inbox/" + encodeURIComponent(mailboxId) + "/agent", { method:"POST", body:JSON.stringify({ message:text, emailId:selectedEmail?.id }) });
+				document.getElementById(pendingId).textContent = result.reply;
+			} catch (error) {
+				document.getElementById(pendingId).textContent = "AI request failed: " + error.message;
+			}
+			document.getElementById("chat").scrollTop = document.getElementById("chat").scrollHeight;
 		}
 		init().catch((error) => console.log(error.message));
 	</script>
@@ -680,7 +814,7 @@ async function handle(req, res) {
 		if (req.method === "POST" && inboxAgentMatch) {
 			const mailboxId = decodeURIComponent(inboxAgentMatch[1]);
 			const body = await readBody(req);
-			const reply = await agentReply({ mailboxId, message: String(body.message || "") });
+			const reply = await agentReply({ mailboxId, message: String(body.message || ""), emailId: body.emailId });
 			sendJson(res, 200, { ok: true, reply });
 			return;
 		}
