@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
+import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { once } from "node:events";
@@ -14,6 +15,12 @@ async function withServer(fn) {
 		MAIL_WORKER_ADMIN_EMAILS: process.env.MAIL_WORKER_ADMIN_EMAILS,
 		MAIL_WORKER_AUTH_DELIVERY: process.env.MAIL_WORKER_AUTH_DELIVERY,
 		MAIL_WORKER_AUTH_TEST_CODE: process.env.MAIL_WORKER_AUTH_TEST_CODE,
+		MAIL_WORKER_AI_PROVIDER: process.env.MAIL_WORKER_AI_PROVIDER,
+		MAIL_WORKER_AI_BASE_URL: process.env.MAIL_WORKER_AI_BASE_URL,
+		MAIL_WORKER_AI_API_KEY: process.env.MAIL_WORKER_AI_API_KEY,
+		MAIL_WORKER_AI_MODEL: process.env.MAIL_WORKER_AI_MODEL,
+		MAIL_WORKER_AI_SESSION_KEY: process.env.MAIL_WORKER_AI_SESSION_KEY,
+		MAIL_WORKER_AI_TIMEOUT_MS: process.env.MAIL_WORKER_AI_TIMEOUT_MS,
 	};
 	process.env.MAIL_WORKER_DATA_DIR = dir;
 	const server = createAdminServer();
@@ -116,4 +123,49 @@ test("admin server exposes server-native inbox and agent APIs", async () => {
 		assert.equal(agent.ok, true);
 		assert.match(agent.reply, /Latest emails/);
 	});
+});
+
+test("admin server routes inbox agent to configured Clawdbot-compatible gateway", async () => {
+	let capturedRequest = null;
+	const aiServer = http.createServer(async (req, res) => {
+		const chunks = [];
+		for await (const chunk of req) chunks.push(chunk);
+		capturedRequest = {
+			url: req.url,
+			auth: req.headers.authorization,
+			sessionKey: req.headers["x-clawdbot-session-key"],
+			body: JSON.parse(Buffer.concat(chunks).toString("utf8")),
+		};
+		res.writeHead(200, { "Content-Type": "application/json" });
+		res.end(JSON.stringify({
+			choices: [{ message: { content: "AI gateway response from Clawdbot" } }],
+		}));
+	});
+	aiServer.listen(0, "127.0.0.1");
+	await once(aiServer, "listening");
+	const address = aiServer.address();
+	try {
+		process.env.MAIL_WORKER_AI_PROVIDER = "clawdbot";
+		process.env.MAIL_WORKER_AI_BASE_URL = `http://${address.address}:${address.port}/v1`;
+		process.env.MAIL_WORKER_AI_API_KEY = "test-key";
+		process.env.MAIL_WORKER_AI_MODEL = "clawdbot";
+		process.env.MAIL_WORKER_AI_SESSION_KEY = "mailcenter-test-session";
+		await withServer(async (baseUrl) => {
+			const mailboxes = await fetch(`${baseUrl}/api/inbox/mailboxes`).then((res) => res.json());
+			const mailboxId = mailboxes.mailboxes[0].id;
+			const agent = await fetch(`${baseUrl}/api/inbox/${encodeURIComponent(mailboxId)}/agent`, {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ message: "Bạn đang dùng model gì?" }),
+			}).then((res) => res.json());
+			assert.equal(agent.ok, true);
+			assert.match(agent.reply, /AI gateway response from Clawdbot/);
+		});
+		assert.equal(capturedRequest.url, "/v1/chat/completions");
+		assert.equal(capturedRequest.auth, "Bearer test-key");
+		assert.equal(capturedRequest.sessionKey, "mailcenter-test-session");
+		assert.equal(capturedRequest.body.model, "clawdbot");
+	} finally {
+		await new Promise((resolve) => aiServer.close(resolve));
+	}
 });

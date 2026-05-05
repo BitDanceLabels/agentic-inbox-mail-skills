@@ -245,11 +245,23 @@ function extractTextFromAiResponse(data) {
 	);
 }
 
+function getAiSessionKey(mailboxId) {
+	const explicit = process.env.MAIL_WORKER_AI_SESSION_KEY || process.env.BUMBEE_MAIL_AI_SESSION_KEY || "";
+	if (explicit) return explicit;
+	const provider = (process.env.MAIL_WORKER_AI_PROVIDER || process.env.BUMBEE_MAIL_AI_PROVIDER || "").toLowerCase();
+	if (provider !== "clawdbot") return "";
+	return `mailcenter-${mailboxId.replace(/[^a-zA-Z0-9._-]/g, "_")}`;
+}
+
 async function callOpenAiCompatible({ mailboxId, message, emails, selectedEmail }) {
 	const baseUrl = process.env.MAIL_WORKER_AI_BASE_URL || process.env.BUMBEE_MAIL_AI_BASE_URL || "";
 	const apiKey = process.env.MAIL_WORKER_AI_API_KEY || process.env.BUMBEE_MAIL_AI_API_KEY || "";
 	const model = process.env.MAIL_WORKER_AI_MODEL || process.env.BUMBEE_MAIL_AI_MODEL || "gpt-4o-mini";
 	if (!baseUrl || !apiKey) return null;
+	const timeoutMs = Number(process.env.MAIL_WORKER_AI_TIMEOUT_MS || process.env.BUMBEE_MAIL_AI_TIMEOUT_MS || 20000);
+	const sessionKey = getAiSessionKey(mailboxId);
+	const controller = new AbortController();
+	const timeout = setTimeout(() => controller.abort(), timeoutMs);
 	const mailboxSnapshot = emails.slice(0, 8).map((email) => ({
 		subject: email.subject,
 		from: email.sender,
@@ -258,42 +270,52 @@ async function callOpenAiCompatible({ mailboxId, message, emails, selectedEmail 
 		read: email.read,
 		preview: String(email.body || "").slice(0, 500),
 	}));
-	const res = await fetch(`${baseUrl.replace(/\/$/, "")}/chat/completions`, {
-		method: "POST",
-		headers: {
+	try {
+		const headers = {
 			"Content-Type": "application/json",
 			Authorization: `Bearer ${apiKey}`,
-		},
-		body: JSON.stringify({
-			model,
-			temperature: 0.4,
-			messages: [
-				{
-					role: "system",
-					content: [
-						"You are Bumbee Email Agent, a practical Vietnamese/English email operations assistant.",
-						"Answer naturally and directly. Help read inboxes, classify ticket/task emails, summarize, and draft professional replies.",
-						"If the user asks what model you use, say the configured model id and that you are routed through the Bumbee server-native mail center.",
-					].join(" "),
-				},
-				{
-					role: "user",
-					content: JSON.stringify({
-						mailboxId,
-						selectedEmail,
-						inbox: mailboxSnapshot,
-						userMessage: message,
-					}),
-				},
-			],
-		}),
-	});
-	if (!res.ok) {
-		const detail = await res.text().catch(() => "");
-		throw new Error(`AI gateway HTTP ${res.status}: ${detail.slice(0, 300)}`);
+		};
+		if (sessionKey) headers["x-clawdbot-session-key"] = sessionKey;
+		const res = await fetch(`${baseUrl.replace(/\/$/, "")}/chat/completions`, {
+			method: "POST",
+			headers,
+			signal: controller.signal,
+			body: JSON.stringify({
+				model,
+				temperature: 0.4,
+				messages: [
+					{
+						role: "system",
+						content: [
+							"You are Bumbee Email Agent, a practical Vietnamese/English email operations assistant.",
+							"Answer naturally and directly. Help read inboxes, classify ticket/task emails, summarize, and draft professional replies.",
+							"If the user asks what model you use, say the configured model id and that you are routed through the Bumbee Clawdbot or server-native mail gateway.",
+						].join(" "),
+					},
+					{
+						role: "user",
+						content: JSON.stringify({
+							mailboxId,
+							selectedEmail,
+							inbox: mailboxSnapshot,
+							userMessage: message,
+						}),
+					},
+				],
+			}),
+		});
+		if (!res.ok) {
+			const detail = await res.text().catch(() => "");
+			throw new Error(`AI gateway HTTP ${res.status}: ${detail.slice(0, 300)}`);
+		}
+		const data = await res.json();
+		return extractTextFromAiResponse(data);
+	} catch (error) {
+		if (error.name === "AbortError") throw new Error(`AI gateway timeout after ${timeoutMs}ms`);
+		throw error;
+	} finally {
+		clearTimeout(timeout);
 	}
-	const data = await res.json();
-	return extractTextFromAiResponse(data);
 }
 
 async function agentReply({ mailboxId, message, emailId }) {
