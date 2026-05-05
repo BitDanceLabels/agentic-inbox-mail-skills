@@ -657,7 +657,7 @@ function inboxHtml() {
 			<div class="nav"><a href="/"><button>Worker Admin</button></a></div>
 		</aside>
 		<section>
-			<div class="toolbar"><strong>Inbox</strong><button onclick="loadEmails()">Refresh</button></div>
+			<div class="toolbar"><strong id="inbox-title">Inbox</strong><button onclick="loadEmails()">Refresh</button></div>
 			<div class="list" id="emails"></div>
 		</section>
 		<main class="reader">
@@ -682,6 +682,7 @@ function inboxHtml() {
 		let mailboxesCache = [];
 		let readyShown = false;
 		function esc(value) { return String(value || "").replace(/[&<>"']/g, (c) => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#039;" }[c])); }
+		function js(value) { return JSON.stringify(String(value || "")); }
 		async function api(path, options) {
 			const res = await fetch(path, { headers:{ "Content-Type":"application/json" }, ...options });
 			const data = await res.json();
@@ -701,7 +702,8 @@ function inboxHtml() {
 			document.getElementById("login").hidden = true; document.getElementById("app").hidden = false; init();
 		}
 		function renderMailboxes() {
-			document.getElementById("mailboxes").innerHTML = mailboxesCache.map((m) => '<button class="mailbox ' + (m.id === mailboxId ? 'active' : '') + '" onclick="selectMailbox(\\'' + esc(m.id) + '\\')">' + esc(m.id) + '</button>').join("");
+			document.getElementById("mailboxes").innerHTML = mailboxesCache.map((m) => '<button class="mailbox ' + (m.id === mailboxId ? 'active' : '') + '" onclick="selectMailbox(' + js(m.id) + ')">' + esc(m.id) + '</button>').join("");
+			document.getElementById("inbox-title").textContent = mailboxId ? "Inbox - " + mailboxId : "Inbox";
 		}
 		async function init(preferredMailbox) {
 			const data = await api("/api/inbox/mailboxes");
@@ -722,19 +724,23 @@ function inboxHtml() {
 			document.getElementById("subject").textContent = "Loading...";
 			document.getElementById("meta").textContent = mailboxId;
 			document.getElementById("body").textContent = "";
+			document.getElementById("emails").innerHTML = '<p style="color:#6b7280;padding:12px">Loading ' + esc(mailboxId) + '...</p>';
 			document.getElementById("chat").innerHTML = "";
 			addAi("Switched to " + mailboxId + ". Ask me to list latest emails, summarize the selected email, or draft a reply.");
 			await loadEmails();
 		}
 		async function loadEmails() {
 			const data = await api("/api/inbox/" + encodeURIComponent(mailboxId) + "/emails");
-			document.getElementById("emails").innerHTML = data.emails.map((e, i) => '<button class="email ' + (selectedEmail?.id === e.id || (!selectedEmail && i === 0) ? 'active' : '') + '" onclick="openEmail(\\'' + esc(e.id) + '\\')"><strong>' + esc(e.subject) + '</strong><span>' + esc(e.sender) + ' · ' + esc(e.date) + '</span><span>' + esc(e.body).slice(0, 120) + '</span></button>').join("");
+			document.getElementById("inbox-title").textContent = mailboxId ? "Inbox - " + mailboxId : "Inbox";
+			document.getElementById("emails").innerHTML = data.emails.length ? data.emails.map((e, i) => '<button class="email ' + (selectedEmail?.id === e.id || (!selectedEmail && i === 0) ? 'active' : '') + '" onclick="openEmail(' + js(e.id) + ')"><strong>' + esc(e.subject) + '</strong><span>' + esc(e.sender) + ' -> ' + esc(e.recipient || mailboxId) + ' · ' + esc(e.date) + '</span><span>' + esc(e.body).slice(0, 120) + '</span></button>').join("") : '<p style="color:#6b7280;padding:12px">No emails in ' + esc(mailboxId) + ' yet.</p>';
 			if (!selectedEmail && data.emails[0]) openEmail(data.emails[0].id, data.emails);
 		}
 		async function openEmail(id, existing) {
 			const emails = existing || (await api("/api/inbox/" + encodeURIComponent(mailboxId) + "/emails")).emails;
 			selectedEmail = emails.find((e) => e.id === id);
 			if (!selectedEmail) return;
+			document.querySelectorAll(".email").forEach((button) => button.classList.remove("active"));
+			Array.from(document.querySelectorAll(".email")).find((button) => button.getAttribute("onclick") === "openEmail(" + js(id) + ")")?.classList.add("active");
 			document.getElementById("subject").textContent = selectedEmail.subject;
 			document.getElementById("meta").textContent = selectedEmail.sender + " -> " + selectedEmail.recipient + " · " + selectedEmail.date;
 			document.getElementById("body").textContent = selectedEmail.body;
