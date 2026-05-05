@@ -87,6 +87,24 @@ async function sendCodeEmail(email, code) {
 		console.log(`Bumbee Mail Center code for ${email}: ${code}`);
 		return { delivery: "console" };
 	}
+	const gatewayUrl = process.env.MAIL_WORKER_AUTH_GATEWAY_URL || "";
+	if (gatewayUrl) {
+		const res = await fetch(gatewayUrl, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({
+				to_email: email,
+				subject,
+				message: body,
+				profile: process.env.MAIL_WORKER_AUTH_GATEWAY_PROFILE || "gmail_work",
+			}),
+		});
+		if (!res.ok) {
+			const detail = await res.text().catch(() => "");
+			throw new Error(`mail gateway returned HTTP ${res.status}: ${detail.slice(0, 300)}`);
+		}
+		return { delivery: "mail-gateway" };
+	}
 	const message = [
 		`From: Bumbee Mail Center <${from}>`,
 		`To: ${email}`,
@@ -97,7 +115,7 @@ async function sendCodeEmail(email, code) {
 		body,
 	].join("\n");
 	await new Promise((resolve, reject) => {
-		const child = spawn("/usr/sbin/sendmail", ["-t"], { stdio: ["pipe", "ignore", "pipe"] });
+		const child = spawn("/usr/sbin/sendmail", ["-f", from, "-t"], { stdio: ["pipe", "ignore", "pipe"] });
 		let stderr = "";
 		child.stderr.on("data", (chunk) => {
 			stderr += chunk.toString();
