@@ -5,21 +5,18 @@ services:
       dockerfile: Dockerfile.mailcenter
     container_name: bumbee-mail-admin
     restart: unless-stopped
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    ports:
-      - "127.0.0.1:18920:18920"
+    network_mode: host
     environment:
-      MAIL_WORKER_ADMIN_HOST: "0.0.0.0"
+      MAIL_WORKER_ADMIN_HOST: "127.0.0.1"
       MAIL_WORKER_ADMIN_PORT: "18920"
       MAIL_WORKER_DATA_DIR: "/app/server-native/data"
       MAIL_WORKER_REQUIRE_AUTH: "true"
       MAIL_WORKER_ADMIN_EMAILS: "${MAIL_WORKER_ADMIN_EMAILS:-nhutpham@bitdancegroup.com}"
       MAIL_WORKER_AUTH_FROM: "${MAIL_WORKER_AUTH_FROM:-nhutpham@bitdancegroup.com}"
-      MAIL_WORKER_AUTH_GATEWAY_URL: "${MAIL_WORKER_AUTH_GATEWAY_URL:-http://host.docker.internal:30099/notify/email}"
+      MAIL_WORKER_AUTH_GATEWAY_URL: "${MAIL_WORKER_AUTH_GATEWAY_URL:-http://127.0.0.1:30099/notify/email}"
       MAIL_WORKER_AUTH_GATEWAY_PROFILE: "${MAIL_WORKER_AUTH_GATEWAY_PROFILE:-gmail_work}"
       MAIL_WORKER_AI_PROVIDER: "${MAIL_WORKER_AI_PROVIDER:-clawdbot}"
-      MAIL_WORKER_AI_BASE_URL: "${MAIL_WORKER_AI_BASE_URL:-http://host.docker.internal:18788/v1}"
+      MAIL_WORKER_AI_BASE_URL: "${MAIL_WORKER_AI_BASE_URL:-http://127.0.0.1:18788/v1}"
       MAIL_WORKER_AI_API_KEY: "${MAIL_WORKER_AI_API_KEY:?Set MAIL_WORKER_AI_API_KEY before starting mailcenter}"
       MAIL_WORKER_AI_MODEL: "${MAIL_WORKER_AI_MODEL:-clawdbot}"
       MAIL_WORKER_AI_SESSION_KEY: "${MAIL_WORKER_AI_SESSION_KEY:-mailcenter-inbox-agent}"
