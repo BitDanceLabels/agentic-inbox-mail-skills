@@ -1,0 +1,9 @@
+.git
+.react-router
+.wrangler
+build
+node_modules
+npm-debug.log
+server-native/data
+worker-configuration.d.ts
+tsconfig*.tsbuildinfo
